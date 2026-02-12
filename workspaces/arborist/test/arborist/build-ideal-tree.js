@@ -1129,7 +1129,7 @@ t.test('resolve links in global mode', async t => {
   t.equal(tree.children.get('linked-dep').resolved, resolved)
 })
 
-t.test('dont get confused if root matches duped metadep', async t => {
+t.test('do not get confused if root matches duped metadep', async t => {
   createRegistry(t, true)
   const path = resolve(fixtures, 'test-root-matches-metadep')
   const arb = newArb(path, { installStrategy: 'hoisted' })
@@ -1320,7 +1320,7 @@ t.test('override a conflict with the root peer dep (with force)', async t => {
   t.matchSnapshot(await printIdeal(path, { strictPeerDeps: false, force: true }), 'non-strict and force override')
 })
 
-t.test('push conflicted peer deps deeper in to the tree to solve', async t => {
+t.test('push conflicted peer deps deeper into the tree to solve', async t => {
   const path = resolve(fixtures, 'testing-peer-dep-conflict-chain/override-dep')
   createRegistry(t, true)
   t.matchSnapshot(await printIdeal(path))
@@ -1655,6 +1655,16 @@ t.test('more peer dep conflicts', async t => {
       error: false,
       resolvable: true,
     },
+    'peerDep replacement of top level dep with different version resulting detached top level dep': {
+      pkg: {
+        description: 'a@ -> (PeerOptional(b, c, dep, dep))  b -> ( Peer(a) ) c -> ( Peer(a) )',
+        devDependencies: {
+          '@test/a': '^1.1.0',
+          '@test/b': '1.1.0',
+        },
+      },
+      error: false,
+      resolvable: true },
   })
 
   createRegistry(t, true)
@@ -3274,7 +3284,7 @@ t.test('competing peerSets resolve in both root and workspace', async t => {
     ]
   }
 
-  await t.test('overlapping peerSets dont warn', async t => {
+  await t.test('overlapping peerSets do not warn', async t => {
     // This should not cause a warning because replacing `c@2` and `d@2`
     // with `c@1` and `d@1` is still valid.
     //
@@ -3314,7 +3324,7 @@ t.test('competing peerSets resolve in both root and workspace', async t => {
 
     const [rootWarnings = [], wsWarnings = []] = warnings
     // TODO: these warn for now but shouldnt
-    // https://github.com/npm/arborist/issues/347
+    // https://github.com/npm/cli/issues/4270
     t.comment('FIXME')
     t.match(rootWarnings, ['warn', 'ERESOLVE', 'overriding peer dependency', {
       code: 'ERESOLVE',
@@ -3375,7 +3385,7 @@ t.test('competing peerSets resolve in both root and workspace', async t => {
     t.equal(wsD.version, '1.0.0', 'workspace d version')
 
     // TODO: these should not be undefined
-    // https://github.com/npm/arborist/issues/348
+    // https://github.com/npm/cli/issues/4269
     t.comment('FIXME')
     t.equal((wsTargetC || {}).version, undefined, 'workspace target c version')
     t.equal((wsTargetD || {}).version, undefined, 'workspace target d version')
@@ -4388,5 +4398,65 @@ t.test('installLinks behavior with project-internal file dependencies', async t 
     t.ok(wrapperPkg.isLink, 'wrapper-pkg should be a link (project-internal)')
     t.ok(nestedDep, 'nested-dep should be found')
     t.ok(nestedDep.isLink, 'nested-dep should be a link (project-internal)')
+  })
+
+  t.test('installLinks=true with transitive external file dependencies', async t => {
+    // mainpkg installs b (external file dep) with --install-links
+    // b depends on a (another external file dep via file:../a)
+    // Both should be installed (not linked) and dependencies should resolve correctly
+    const testRoot = t.testdir({
+      a: {
+        'package.json': JSON.stringify({
+          name: 'a',
+          main: 'index.js',
+        }),
+        'index.js': 'export const A = "A";',
+      },
+      b: {
+        'package.json': JSON.stringify({
+          name: 'b',
+          main: 'index.js',
+          dependencies: {
+            a: 'file:../a',
+          },
+        }),
+        'index.js': 'import {A} from "a";export const fn = () => console.log(A);',
+      },
+      mainpkg: {
+        'package.json': JSON.stringify({}),
+      },
+    })
+
+    const mainpkgPath = join(testRoot, 'mainpkg')
+    const bPath = join(testRoot, 'b')
+    createRegistry(t, false)
+
+    const arb = newArb(mainpkgPath, { installLinks: true })
+
+    // Add the external file dependency using the full path
+    await arb.buildIdealTree({ add: [`file:${bPath}`] })
+
+    const tree = arb.idealTree
+
+    // Both packages should be present in the tree
+    const packageB = tree.children.get('b')
+    const packageA = tree.children.get('a')
+
+    t.ok(packageB, 'package b should be found in tree')
+    t.ok(packageA, 'package a should be found in tree (transitive dependency)')
+
+    // Both should be installed (not linked) due to installLinks=true
+    t.notOk(packageB.isLink, 'package b should not be a link (installLinks=true)')
+    t.notOk(packageA.isLink, 'package a should not be a link (transitive with installLinks=true)')
+
+    // Verify that the resolved paths are correct
+    t.match(packageB.resolved, /file:.*[/\\]b$/, 'package b should have correct resolved path')
+    t.match(packageA.resolved, /file:.*[/\\]a$/, 'package a should have correct resolved path')
+
+    // Verify the dependency relationship
+    const edgeToA = packageB.edgesOut.get('a')
+    t.ok(edgeToA, 'package b should have an edge to a')
+    t.ok(edgeToA.valid, 'the edge from b to a should be valid')
+    t.equal(edgeToA.to, packageA, 'the edge from b should point to package a')
   })
 })
